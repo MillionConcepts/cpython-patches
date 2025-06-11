@@ -57,11 +57,12 @@ _posixshmem_shm_open_impl(PyObject *module, PyObject *path, int flags,
         PyErr_SetString(PyExc_ValueError, "embedded null character");
         return -1;
     }
+    PyThreadState *tstate = PyEval_SaveThread();
     do {
-        Py_BEGIN_ALLOW_THREADS
         fd = shm_open(name, flags, mode);
-        Py_END_ALLOW_THREADS
-    } while (fd < 0 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+    } while (fd < 0 && errno == EINTR
+             && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+    PyEval_RestoreThread(tstate);
 
     if (fd < 0) {
         if (!async_err)
@@ -102,11 +103,12 @@ _posixshmem_shm_unlink_impl(PyObject *module, PyObject *path)
         PyErr_SetString(PyExc_ValueError, "embedded null character");
         return NULL;
     }
+    PyThreadState *tstate = PyEval_SaveThread();
     do {
-        Py_BEGIN_ALLOW_THREADS
         rv = shm_unlink(name);
-        Py_END_ALLOW_THREADS
-    } while (rv < 0 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+    } while (rv < 0 && errno == EINTR
+             && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+    PyEval_RestoreThread(tstate);
 
     if (rv < 0) {
         if (!async_err)

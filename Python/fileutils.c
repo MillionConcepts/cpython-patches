@@ -1641,12 +1641,13 @@ _Py_open_impl(const char *pathname, int flags, int gil_held)
             return -1;
         }
 
+        PyThreadState *tstate = PyEval_SaveThread();
         do {
-            Py_BEGIN_ALLOW_THREADS
             fd = open(pathname, flags);
-            Py_END_ALLOW_THREADS
-        } while (fd < 0
-                 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+        } while (fd < 0 && errno == EINTR
+                 && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+        PyEval_RestoreThread(tstate);
+
         if (async_err) {
             Py_DECREF(pathname_obj);
             return -1;
@@ -1793,14 +1794,16 @@ Py_fopen(PyObject *path, const char *mode)
         return NULL;
     }
 
+    PyThreadState *tstate = PyEval_SaveThread();
+    _Py_BEGIN_SUPPRESS_IPH
     do {
-        Py_BEGIN_ALLOW_THREADS
-        _Py_BEGIN_SUPPRESS_IPH
         f = _wfopen(wpath, wmode);
-        _Py_END_SUPPRESS_IPH
-        Py_END_ALLOW_THREADS
-    } while (f == NULL
-             && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+
+    } while (f == NULL && errno == EINTR
+             && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+    _Py_END_SUPPRESS_IPH
+    PyEval_RestoreThread(tstate);
+
     saved_errno = errno;
     PyMem_Free(wpath);
 #else
@@ -1810,12 +1813,13 @@ Py_fopen(PyObject *path, const char *mode)
     }
     const char *path_bytes = PyBytes_AS_STRING(bytes);
 
+    PyThreadState *tstate = PyEval_SaveThread();
     do {
-        Py_BEGIN_ALLOW_THREADS
         f = fopen(path_bytes, mode);
-        Py_END_ALLOW_THREADS
-    } while (f == NULL
-             && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+    } while (f == NULL && errno == EINTR
+             && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+    PyEval_RestoreThread(tstate);
+
     saved_errno = errno;
     Py_DECREF(bytes);
 #endif
@@ -1881,9 +1885,9 @@ _Py_read(int fd, void *buf, size_t count)
         count = _PY_READ_MAX;
     }
 
+    PyThreadState *tstate = PyEval_SaveThread();
     _Py_BEGIN_SUPPRESS_IPH
     do {
-        Py_BEGIN_ALLOW_THREADS
         errno = 0;
 #ifdef MS_WINDOWS
         _doserrno = 0;
@@ -1901,10 +1905,10 @@ _Py_read(int fd, void *buf, size_t count)
         /* save/restore errno because PyErr_CheckSignals()
          * and PyErr_SetFromErrno() can modify it */
         err = errno;
-        Py_END_ALLOW_THREADS
     } while (n < 0 && err == EINTR &&
-            !(async_err = PyErr_CheckSignals()));
+            !(async_err = PyErr_CheckSignalsDetached(tstate)));
     _Py_END_SUPPRESS_IPH
+    PyEval_RestoreThread(tstate);
 
     if (async_err) {
         /* read() was interrupted by a signal (failed with EINTR)
@@ -1955,8 +1959,8 @@ _Py_write_impl(int fd, const void *buf, size_t count, int gil_held)
     }
 
     if (gil_held) {
+        PyThreadState *tstate = PyEval_SaveThread();
         do {
-            Py_BEGIN_ALLOW_THREADS
             errno = 0;
 #ifdef MS_WINDOWS
             // write() on a non-blocking pipe fails with ENOSPC on Windows if
@@ -1977,9 +1981,9 @@ _Py_write_impl(int fd, const void *buf, size_t count, int gil_held)
             /* save/restore errno because PyErr_CheckSignals()
              * and PyErr_SetFromErrno() can modify it */
             err = errno;
-            Py_END_ALLOW_THREADS
         } while (n < 0 && err == EINTR &&
-                !(async_err = PyErr_CheckSignals()));
+                !(async_err = PyErr_CheckSignalsDetached(tstate)));
+        PyEval_RestoreThread(tstate);
     }
     else {
         do {

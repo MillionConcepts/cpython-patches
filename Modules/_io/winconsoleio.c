@@ -623,7 +623,7 @@ read_console_w(HANDLE handle, DWORD maxlen, DWORD *readlen) {
     *readlen = 0;
 
     //DebugBreak();
-    Py_BEGIN_ALLOW_THREADS
+    PyThreadState *tstate = PyEval_SaveThread();
     DWORD off = 0;
     while (off < maxlen) {
         DWORD n = (DWORD)-1;
@@ -647,9 +647,7 @@ read_console_w(HANDLE handle, DWORD maxlen, DWORD *readlen) {
             if (WaitForSingleObjectEx(hInterruptEvent, 100, FALSE)
                     == WAIT_OBJECT_0) {
                 ResetEvent(hInterruptEvent);
-                Py_BLOCK_THREADS
-                sig = PyErr_CheckSignals();
-                Py_UNBLOCK_THREADS
+                sig = PyErr_CheckSignalsDetached(tstate);
                 if (sig < 0)
                     break;
             }
@@ -687,8 +685,7 @@ read_console_w(HANDLE handle, DWORD maxlen, DWORD *readlen) {
 
         off += BUFSIZ;
     }
-
-    Py_END_ALLOW_THREADS
+    PyEval_RestoreThread(tstate);
 
     if (sig)
         goto error;

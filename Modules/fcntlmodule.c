@@ -73,11 +73,12 @@ fcntl_fcntl_impl(PyObject *module, int fd, int code, PyObject *arg)
             }
         }
 
+        PyThreadState *tstate = PyEval_SaveThread();
         do {
-            Py_BEGIN_ALLOW_THREADS
             ret = fcntl(fd, code, (int)int_arg);
-            Py_END_ALLOW_THREADS
-        } while (ret == -1 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+        } while (ret == -1 && errno == EINTR
+                 && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+        PyEval_RestoreThread(tstate);
         if (ret < 0) {
             return !async_err ? PyErr_SetFromErrno(PyExc_OSError) : NULL;
         }
@@ -86,23 +87,24 @@ fcntl_fcntl_impl(PyObject *module, int fd, int code, PyObject *arg)
     if (PyUnicode_Check(arg) || PyObject_CheckBuffer(arg)) {
         Py_buffer view;
 #define FCNTL_BUFSZ 1024
-        /* argument plus NUL byte plus guard to detect a buffer overflow */
-        char buf[FCNTL_BUFSZ+GUARDSZ];
 
         if (!PyArg_Parse(arg, "s*", &view)) {
             return NULL;
         }
         Py_ssize_t len = view.len;
         if (len <= FCNTL_BUFSZ) {
+            /* argument plus NUL byte plus guard to detect a buffer overflow */
+            char buf[FCNTL_BUFSZ+GUARDSZ];
             memcpy(buf, view.buf, len);
             memcpy(buf + len, guard, GUARDSZ);
             PyBuffer_Release(&view);
 
+            PyThreadState *tstate = PyEval_SaveThread();
             do {
-                Py_BEGIN_ALLOW_THREADS
                 ret = fcntl(fd, code, buf);
-                Py_END_ALLOW_THREADS
-            } while (ret == -1 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+            } while (ret == -1 && errno == EINTR
+                     && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+            PyEval_RestoreThread(tstate);
             if (ret < 0) {
                 return !async_err ? PyErr_SetFromErrno(PyExc_OSError) : NULL;
             }
@@ -122,11 +124,12 @@ fcntl_fcntl_impl(PyObject *module, int fd, int code, PyObject *arg)
             memcpy(ptr, view.buf, len);
             PyBuffer_Release(&view);
 
+            PyThreadState *tstate = PyEval_SaveThread();
             do {
-                Py_BEGIN_ALLOW_THREADS
                 ret = fcntl(fd, code, ptr);
-                Py_END_ALLOW_THREADS
-            } while (ret == -1 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+            } while (ret == -1 && errno == EINTR
+                     && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+            PyEval_RestoreThread(tstate);
             if (ret < 0) {
                 if (!async_err) {
                     PyErr_SetFromErrno(PyExc_OSError);
@@ -220,11 +223,12 @@ fcntl_ioctl_impl(PyObject *module, int fd, unsigned long code, PyObject *arg,
             }
         }
 
+        PyThreadState *tstate = PyEval_SaveThread();
         do {
-            Py_BEGIN_ALLOW_THREADS
             ret = ioctl(fd, code, int_arg);
-            Py_END_ALLOW_THREADS
-        } while (ret == -1 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+        } while (ret == -1 && errno == EINTR
+                 && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+        PyEval_RestoreThread(tstate);
         if (ret < 0) {
             return !async_err ? PyErr_SetFromErrno(PyExc_OSError) : NULL;
         }
@@ -244,11 +248,12 @@ fcntl_ioctl_impl(PyObject *module, int fd, unsigned long code, PyObject *arg,
                     memcpy(buf + len, guard, GUARDSZ);
                     ptr = buf;
                 }
+                PyThreadState *tstate = PyEval_SaveThread();
                 do {
-                    Py_BEGIN_ALLOW_THREADS
                     ret = ioctl(fd, code, ptr);
-                    Py_END_ALLOW_THREADS
-                } while (ret == -1 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+                } while (ret == -1 && errno == EINTR
+                         && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+                PyEval_RestoreThread(tstate);
                 if (ret < 0) {
                     if (!async_err) {
                         PyErr_SetFromErrno(PyExc_OSError);
@@ -281,11 +286,12 @@ fcntl_ioctl_impl(PyObject *module, int fd, unsigned long code, PyObject *arg,
             memcpy(buf + len, guard, GUARDSZ);
             PyBuffer_Release(&view);
 
+            PyThreadState *tstate = PyEval_SaveThread();
             do {
-                Py_BEGIN_ALLOW_THREADS
                 ret = ioctl(fd, code, buf);
-                Py_END_ALLOW_THREADS
-            } while (ret == -1 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+            } while (ret == -1 && errno == EINTR
+                     && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+            PyEval_RestoreThread(tstate);
             if (ret < 0) {
                 return !async_err ? PyErr_SetFromErrno(PyExc_OSError) : NULL;
             }
@@ -305,11 +311,12 @@ fcntl_ioctl_impl(PyObject *module, int fd, unsigned long code, PyObject *arg,
             memcpy(ptr, view.buf, len);
             PyBuffer_Release(&view);
 
+            PyThreadState *tstate = PyEval_SaveThread();
             do {
-                Py_BEGIN_ALLOW_THREADS
                 ret = ioctl(fd, code, ptr);
-                Py_END_ALLOW_THREADS
-            } while (ret == -1 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+            } while (ret == -1 && errno == EINTR
+                     && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+            PyEval_RestoreThread(tstate);
             if (ret < 0) {
                 if (!async_err) {
                     PyErr_SetFromErrno(PyExc_OSError);
@@ -352,17 +359,18 @@ fcntl_flock_impl(PyObject *module, int fd, int code)
 {
     int ret;
     int async_err = 0;
+    PyThreadState *tstate;
 
     if (PySys_Audit("fcntl.flock", "ii", fd, code) < 0) {
         return NULL;
     }
 
+    tstate = PyEval_SaveThread();
 #ifdef HAVE_FLOCK
     do {
-        Py_BEGIN_ALLOW_THREADS
         ret = flock(fd, code);
-        Py_END_ALLOW_THREADS
-    } while (ret == -1 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+    } while (ret == -1 && errno == EINTR
+             && !(async_err = PyErr_CheckSignalsDetached(tstate)));
 #else
 
 #ifndef LOCK_SH
@@ -386,12 +394,12 @@ fcntl_flock_impl(PyObject *module, int fd, int code)
         }
         l.l_whence = l.l_start = l.l_len = 0;
         do {
-            Py_BEGIN_ALLOW_THREADS
             ret = fcntl(fd, (code & LOCK_NB) ? F_SETLK : F_SETLKW, &l);
-            Py_END_ALLOW_THREADS
-        } while (ret == -1 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+        } while (ret == -1 && errno == EINTR
+                 && !(async_err = PyErr_CheckSignalsDetached(tstate)));
     }
 #endif /* HAVE_FLOCK */
+    PyEval_RestoreThread(tstate);
     if (ret < 0) {
         return !async_err ? PyErr_SetFromErrno(PyExc_OSError) : NULL;
     }
@@ -489,11 +497,12 @@ fcntl_lockf_impl(PyObject *module, int fd, int code, PyObject *lenobj,
                 return NULL;
         }
         l.l_whence = whence;
+        PyThreadState *tstate = PyEval_SaveThread();
         do {
-            Py_BEGIN_ALLOW_THREADS
             ret = fcntl(fd, (code & LOCK_NB) ? F_SETLK : F_SETLKW, &l);
-            Py_END_ALLOW_THREADS
-        } while (ret == -1 && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+        } while (ret == -1 && errno == EINTR
+                 && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+        PyEval_RestoreThread(tstate);
     }
     if (ret < 0) {
         return !async_err ? PyErr_SetFromErrno(PyExc_OSError) : NULL;

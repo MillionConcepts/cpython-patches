@@ -1175,12 +1175,13 @@ signal_sigwaitinfo_impl(PyObject *module, sigset_t sigset)
     int err;
     int async_err = 0;
 
+    PyThreadState *tstate = PyEval_SaveThread();
     do {
-        Py_BEGIN_ALLOW_THREADS
         err = sigwaitinfo(&sigset, &si);
-        Py_END_ALLOW_THREADS
-    } while (err == -1
-             && errno == EINTR && !(async_err = PyErr_CheckSignals()));
+    } while (err == -1 && errno == EINTR
+             && !(async_err = PyErr_CheckSignalsDetached(tstate)));
+    PyEval_RestoreThread(tstate);
+
     if (err == -1)
         return (!async_err) ? PyErr_SetFromErrno(PyExc_OSError) : NULL;
 

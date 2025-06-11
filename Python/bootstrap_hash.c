@@ -98,6 +98,9 @@ py_getrandom(void *buffer, Py_ssize_t size, int blocking, int raise)
     int flags;
     char *dest;
     long n;
+    int err = 0;
+    int async_err = 0;
+    PyThreadState *tstate = NULL;
 
     if (!getrandom_works) {
         return 0;
@@ -105,7 +108,12 @@ py_getrandom(void *buffer, Py_ssize_t size, int blocking, int raise)
 
     flags = blocking ? 0 : GRND_NONBLOCK;
     dest = buffer;
-    while (0 < size) {
+    /* When 'raise' is false, we may have been called from a context
+       that has no thread state to save, such as Programs/_freeze_module.  */
+    if (raise)
+        tstate = PyEval_SaveThread();
+
+    while (size > 0) {
 #if defined(__sun) && defined(__SVR4)
         /* Issue #26735: On Solaris, getrandom() is limited to returning up
            to 1024 bytes. Call it multiple times if more bytes are
@@ -117,70 +125,55 @@ py_getrandom(void *buffer, Py_ssize_t size, int blocking, int raise)
 
         errno = 0;
 #ifdef HAVE_GETRANDOM
-        if (raise) {
-            Py_BEGIN_ALLOW_THREADS
-            n = getrandom(dest, n, flags);
-            Py_END_ALLOW_THREADS
-        }
-        else {
-            n = getrandom(dest, n, flags);
-        }
+        n = getrandom(dest, n, flags);
 #else
         /* On Linux, use the syscall() function because the GNU libc doesn't
            expose the Linux getrandom() syscall yet. See:
            https://sourceware.org/bugzilla/show_bug.cgi?id=17252 */
-        if (raise) {
-            Py_BEGIN_ALLOW_THREADS
-            n = syscall(SYS_getrandom, dest, n, flags);
-            Py_END_ALLOW_THREADS
-        }
-        else {
-            n = syscall(SYS_getrandom, dest, n, flags);
-        }
+        n = syscall(SYS_getrandom, dest, n, flags);
 #  ifdef _Py_MEMORY_SANITIZER
         if (n > 0) {
              __msan_unpoison(dest, n);
         }
 #  endif
 #endif
-
-        if (n < 0) {
-            /* ENOSYS: the syscall is not supported by the kernel.
-               EPERM: the syscall is blocked by a security policy (ex: SECCOMP)
-               or something else. */
-            if (errno == ENOSYS || errno == EPERM) {
-                getrandom_works = 0;
-                return 0;
-            }
-
-            /* getrandom(GRND_NONBLOCK) fails with EAGAIN if the system urandom
-               is not initialized yet. For _PyRandom_Init(), we ignore the
-               error and fall back on reading /dev/urandom which never blocks,
-               even if the system urandom is not initialized yet:
-               see the PEP 524. */
-            if (errno == EAGAIN && !raise && !blocking) {
-                return 0;
-            }
-
-            if (errno == EINTR) {
-                if (raise) {
-                    if (PyErr_CheckSignals()) {
-                        return -1;
-                    }
-                }
-
-                /* retry getrandom() if it was interrupted by a signal */
-                continue;
-            }
-
-            if (raise) {
-                PyErr_SetFromErrno(PyExc_OSError);
-            }
-            return -1;
-        }
-
+        err = errno;
+        if (n < 0
+            && (err != EINTR
+                || (raise &&
+                    (async_err = PyErr_CheckSignalsDetached(tstate)) < 0)))
+            break;
         dest += n;
         size -= n;
+    }
+
+    if (raise)
+        PyEval_RestoreThread(tstate);
+
+    if (async_err)
+        return -1;
+
+    if (n < 0) {
+        errno = err;
+        /* ENOSYS: the syscall is not supported by the kernel.
+           EPERM: the syscall is blocked by a security policy (ex: SECCOMP)
+           or something else. */
+        if (err == ENOSYS || err == EPERM) {
+            getrandom_works = 0;
+            return 0;
+        }
+        /* getrandom(GRND_NONBLOCK) fails with EAGAIN if the system urandom
+           is not initialized yet. For _PyRandom_Init(), we ignore the
+           error and fall back on reading /dev/urandom which never blocks,
+           even if the system urandom is not initialized yet:
+           see the PEP 524. */
+        if (err == EAGAIN && !raise && !blocking) {
+            return 0;
+        }
+        if (raise) {
+            PyErr_SetFromErrno(PyExc_OSError);
+        }
+        return -1;
     }
     return 1;
 }
@@ -215,54 +208,55 @@ py_getentropy(char *buffer, Py_ssize_t size, int raise)
     /* Is getentropy() supported by the running kernel? Set to 0 if
        getentropy() failed with ENOSYS or EPERM. */
     static int getentropy_works = 1;
+    int err = 0;
+    int async_err = 0;
+    PyThreadState *tstate = NULL;
 
     if (!getentropy_works) {
         return 0;
     }
 
+    /* When 'raise' is false, we may have been called from a context
+       that has no thread state to save, such as Programs/_freeze_module.  */
+    if (raise)
+        tstate = PyEval_SaveThread();
+
     while (size > 0) {
         /* getentropy() is limited to returning up to 256 bytes. Call it
            multiple times if more bytes are requested. */
         Py_ssize_t len = Py_MIN(size, 256);
-        int res;
 
-        if (raise) {
-            Py_BEGIN_ALLOW_THREADS
-            res = getentropy(buffer, len);
-            Py_END_ALLOW_THREADS
+        err = 0;
+        if (getentropy(buffer, len) < 0) {
+            err = errno;
+            if (err != EINTR
+                || (raise &&
+                    (async_err = PyErr_CheckSignalsDetached(tstate)) < 0))
+            break;
         }
-        else {
-            res = getentropy(buffer, len);
-        }
-
-        if (res < 0) {
-            /* ENOSYS: the syscall is not supported by the running kernel.
-               EPERM: the syscall is blocked by a security policy (ex: SECCOMP)
-               or something else. */
-            if (errno == ENOSYS || errno == EPERM) {
-                getentropy_works = 0;
-                return 0;
-            }
-
-            if (errno == EINTR) {
-                if (raise) {
-                    if (PyErr_CheckSignals()) {
-                        return -1;
-                    }
-                }
-
-                /* retry getentropy() if it was interrupted by a signal */
-                continue;
-            }
-
-            if (raise) {
-                PyErr_SetFromErrno(PyExc_OSError);
-            }
-            return -1;
-        }
-
         buffer += len;
         size -= len;
+    }
+
+    if (raise)
+        PyEval_RestoreThread(state);
+
+    if (async_err)
+        return -1;
+
+    if (err) {
+        /* ENOSYS: the syscall is not supported by the running kernel.
+           EPERM: the syscall is blocked by a security policy (ex: SECCOMP)
+           or something else. */
+        if (err == ENOSYS || err == EPERM) {
+            getentropy_works = 0;
+            return 0;
+        }
+        if (raise) {
+            errno = err;
+            PyErr_SetFromErrno(PyExc_OSError);
+        }
+        return -1;
     }
     return 1;
 }
